@@ -8,3 +8,4 @@ scipy
 seaborn
 plotly
 requests
+openai
