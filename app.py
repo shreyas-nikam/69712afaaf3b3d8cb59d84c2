@@ -14,6 +14,7 @@ from source import (
     # Constants (defaults)
     DEFAULT_THREAT_CATEGORIES,
     DEFAULT_SEVERITY_LEVELS,
+    MAX_CONCURRENT_TEST_RUNS,
 
     # Artifact utilities (ctx-aware)
     generate_sha256_hash,
@@ -459,34 +460,49 @@ elif st.session_state.page == "Execute Tests":
 - On obtaining the response from the AI system, we will use another LLM as a judge to validate whether the response meets the expected safe behavior defined in the test case.""")
 
         if st.button("Run All Tests", type="primary"):
+            # Create a placeholder for dynamic progress updates
+            progress_placeholder = st.empty()
+
+            def update_progress(message: str):
+                """Callback to update progress in the UI"""
+                progress_placeholder.info(message)
+
             with st.spinner("Executing security tests..."):
-                results = execute_security_tests_batched(
-                    test_bank=st.session_state.security_test_bank,
-                    system_type="LLM",
-                    openai_key=st.session_state.openai_api_key,
-                    system_model="gpt-4o",
-                    validator_model="gpt-4o-mini",
-                )
-                st.session_state.test_execution_results = results
+                try:
+                    results = execute_security_tests_batched(
+                        test_bank=st.session_state.security_test_bank,
+                        system_type="LLM",
+                        openai_key=st.session_state.openai_api_key,
+                        system_model="gpt-4o",
+                        validator_model="gpt-4o-mini",
+                        progress_callback=update_progress,
+                    )
+                    st.session_state.test_execution_results = results
 
-                summary = classify_and_summarize_findings(
-                    st.session_state.ctx, st.session_state.test_execution_results)
-                st.session_state.findings_summary = summary
+                    summary = classify_and_summarize_findings(
+                        st.session_state.ctx, st.session_state.test_execution_results)
+                    st.session_state.findings_summary = summary
 
-                execution_results_path = save_json_artifact(
-                    st.session_state.ctx, st.session_state.test_execution_results, "test_execution_results.json"
-                )
-                st.session_state.generated_artifact_paths["test_execution_results.json"] = execution_results_path
+                    execution_results_path = save_json_artifact(
+                        st.session_state.ctx, st.session_state.test_execution_results, "test_execution_results.json"
+                    )
+                    st.session_state.generated_artifact_paths[
+                        "test_execution_results.json"] = execution_results_path
 
-                findings_summary_path = save_json_artifact(
-                    st.session_state.ctx, st.session_state.findings_summary, "findings_summary.json"
-                )
-                st.session_state.generated_artifact_paths["findings_summary.json"] = findings_summary_path
+                    findings_summary_path = save_json_artifact(
+                        st.session_state.ctx, st.session_state.findings_summary, "findings_summary.json"
+                    )
+                    st.session_state.generated_artifact_paths["findings_summary.json"] = findings_summary_path
 
-                st.success(
-                    "Tests executed successfully! Results are available in 'Findings Dashboard'.")
-                st.session_state.page = "Findings Dashboard"
-                # st.rerun()
+                    progress_placeholder.empty()  # Clear progress messages
+                    st.success(
+                        "Tests executed successfully! Results are available in 'Findings Dashboard'.")
+                    st.session_state.page = "Findings Dashboard"
+                    # st.rerun()
+                except Exception as e:
+                    progress_placeholder.empty()
+                    st.error(f"Error during test execution: {str(e)}")
+                    raise
 
 
 # -----------------------------
@@ -515,25 +531,60 @@ elif st.session_state.page == "Findings Dashboard":
         col3.metric("Failed Tests", findings_summary["total_fail"])
 
         st.markdown("---")
-        st.subheader("2. Failures by Severity")
-        severity_df = pd.DataFrame(
-            findings_summary["failures_by_severity"].items(), columns=["Severity", "Count"])
-        severity_df["Severity"] = pd.Categorical(
-            severity_df["Severity"], categories=st.session_state.SEVERITY_LEVELS, ordered=True
-        )
-        severity_df = severity_df.sort_values("Severity")
-        st.bar_chart(severity_df.set_index("Severity"))
+        
+        # Show failures or successes by severity based on test results
+        if findings_summary["total_fail"] > 0:
+            st.subheader("2. Failures by Severity")
+            severity_df = pd.DataFrame(
+                findings_summary["failures_by_severity"].items(), columns=["Severity", "Count"])
+            severity_df["Severity"] = pd.Categorical(
+                severity_df["Severity"], categories=st.session_state.SEVERITY_LEVELS, ordered=True
+            )
+            severity_df = severity_df.sort_values("Severity")
+            st.bar_chart(severity_df.set_index("Severity"))
+        else:
+            st.subheader("2. Successes by Severity")
+            passed_tests = findings_summary.get("passed_tests", [])
+            severity_counts = {}
+            for test in passed_tests:
+                severity = test.get("severity_level", "Unknown")
+                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            severity_df = pd.DataFrame(
+                severity_counts.items(), columns=["Severity", "Count"])
+            severity_df["Severity"] = pd.Categorical(
+                severity_df["Severity"], categories=st.session_state.SEVERITY_LEVELS, ordered=True
+            )
+            severity_df = severity_df.sort_values("Severity")
+            st.bar_chart(severity_df.set_index("Severity"))
 
         st.markdown("---")
-        st.subheader("3. Failures by Threat Category")
-        category_df = pd.DataFrame(
-            findings_summary["failures_by_threat_category"].items(), columns=["Threat Category", "Count"]
-        )
-        category_df["Threat Category"] = pd.Categorical(
-            category_df["Threat Category"], categories=st.session_state.THREAT_CATEGORIES, ordered=True
-        )
-        category_df = category_df.sort_values("Threat Category")
-        st.bar_chart(category_df.set_index("Threat Category"))
+        
+        # Show failures or successes by threat category based on test results
+        if findings_summary["total_fail"] > 0:
+            st.subheader("3. Failures by Threat Category")
+            category_df = pd.DataFrame(
+                findings_summary["failures_by_threat_category"].items(), columns=["Threat Category", "Count"]
+            )
+            category_df["Threat Category"] = pd.Categorical(
+                category_df["Threat Category"], categories=st.session_state.THREAT_CATEGORIES, ordered=True
+            )
+            category_df = category_df.sort_values("Threat Category")
+            st.bar_chart(category_df.set_index("Threat Category"))
+        else:
+            st.subheader("3. Successes by Threat Category")
+            passed_tests = findings_summary.get("passed_tests", [])
+            category_counts = {}
+            for test in passed_tests:
+                category = test.get("threat_category", "Unknown")
+                category_counts[category] = category_counts.get(category, 0) + 1
+            category_df = pd.DataFrame(
+                category_counts.items(), columns=["Threat Category", "Count"]
+            )
+            category_df["Threat Category"] = pd.Categorical(
+                category_df["Threat Category"], categories=st.session_state.THREAT_CATEGORIES, ordered=True
+            )
+            category_df = category_df.sort_values("Threat Category")
+            st.bar_chart(category_df.set_index("Threat Category"))
 
         st.markdown("---")
 
