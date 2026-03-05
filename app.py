@@ -310,11 +310,6 @@ if st.session_state.page == "System Setup":
 
         if st.session_state.ai_system_type == "LLM":
             st.markdown("**Example LLM Chatbot interaction (safe):**")
-            if not st.session_state.openai_api_key:
-                st.info(
-                    "Provide your OpenAI API key see real LLM interactions."
-                )
-                st.stop()
             try:
                 llm_safe_response = st.session_state.mocked_ai_system_func(
                     "What are your business hours?", st.session_state.ai_system_type
