@@ -10,6 +10,7 @@ from source import (
     # Context / config
     create_assessment_context,
     build_config_snapshot,
+    LLMConfig,
 
     # Constants (defaults)
     DEFAULT_THREAT_CATEGORIES,
@@ -103,6 +104,14 @@ if "generated_artifact_paths" not in st.session_state:
 if "openai_api_key" not in st.session_state:
     st.session_state.openai_api_key = None
 
+# LLM provider configuration
+if "llm_provider" not in st.session_state:
+    st.session_state.llm_provider = "azure"  # default to Azure
+if "system_llm_config" not in st.session_state:
+    st.session_state.system_llm_config = None
+if "validator_llm_config" not in st.session_state:
+    st.session_state.validator_llm_config = None
+
 
 def ensure_ctx_initialized() -> None:
     """
@@ -164,25 +173,70 @@ if st.session_state.page == "System Setup":
     )
 
     st.markdown("---")
-    st.subheader("1. Define AI System Type & Name")
+    st.subheader("1. Security Design Requirements")
+    st.markdown(
+        "The following threat categories represent the **security design requirements** "
+        "that will be evaluated during testing:"
+    )
 
+    # Display threat categories as security requirements
+    cols = st.columns(2)
+    for idx, category in enumerate(st.session_state.THREAT_CATEGORIES):
+        with cols[idx % 2]:
+            st.markdown(f"✓ **{category}**")
+
+    st.markdown("---")
+    st.subheader("2. Define AI System Type & Name")
+
+    # Read Azure secrets
+    azure_endpoint = st.secrets.get("azure_endpoint", "")
+    azure_api_key = st.secrets.get("azure_api_key", "")
+    azure_api_version = st.secrets.get(
+        "azure_api_version", "2024-08-01-preview")
+    azure_model = "gpt-5-nano"
+
+    # Provider choice OUTSIDE the form (so it reruns on change)
+    provider_choice = st.radio(
+        "Choose LLM Provider:",
+        options=["Secure Endpoint", "Custom OpenAI"],
+        key="provider_radio",
+        help="Use the default Azure endpoint with gpt-5-nano or provide your own OpenAI API key",
+    )
+
+    # Conditional inputs OUTSIDE the form too
+    openai_api_key = ""
+    openai_model = "gpt-4o"
+
+    if provider_choice == "Secure Endpoint":
+        st.info("Using Secure endpoint with gpt-5-nano model. All the adversarial attack simulations will be blocked by the system's built-in defenses. This is ideal for demonstrating a secure configuration.")
+        if not azure_endpoint or not azure_api_key:
+            st.warning(
+                "⚠️ Default credentials for the Secure Endpoint are not configured in secrets. Please configure or use Custom OpenAI.")
+    else:
+        st.markdown("**Custom OpenAI Settings**")
+        openai_api_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            key="openai_api_key_input",
+            value=st.session_state.get("openai_api_key", "") or "",
+        )
+        openai_model = st.selectbox(
+            "OpenAI Model",
+            ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", ],
+            key="openai_model_selectbox",
+            index=0,
+        )
+        if openai_api_key and openai_model:
+            st.info(
+                f"Using Custom OpenAI with {openai_model}. This allows for testing with a real LLM, including observing how it handles adversarial prompts based on the provided test cases.")
+
+    # Now the form only handles "submit"
     with st.form("ai_system_config_form"):
-
-        st.session_state.system_type_input = "LLM"
         system_type_option = "LLM"
         system_name_input = st.text_input(
             "Enter AI System Name (e.g., 'Customer Support Chatbot'):",
-            value=st.session_state.ai_system_name if st.session_state.ai_system_name else "",
+            value=st.session_state.ai_system_name or "",
             key="system_name_input",
-        )
-        st.markdown("### OpenAI Settings")
-        openai_api_key = st.text_input(
-            "OpenAI API Key", type="password", key="openai_api_key_input")
-        openai_model = st.selectbox(
-            "OpenAI Model",
-            ["gpt-3.5-turbo", "gpt-4", "gpt-4.1", "gpt-5.1", "gpt-5.2"],
-            index=0,
-            key="openai_model_selectbox",
         )
 
         submitted = st.form_submit_button("Configure System")
@@ -193,30 +247,66 @@ if st.session_state.page == "System Setup":
             else:
                 st.session_state.ai_system_type = system_type_option
                 st.session_state.ai_system_name = system_name_input
-                st.session_state.openai_api_key = openai_api_key.strip() if openai_api_key else None
-                st.session_state.openai_model = openai_model
-                if system_type_option == "LLM":
-                    if not st.session_state.openai_api_key:
+
+                if provider_choice == "Secure Endpoint":
+                    if not azure_endpoint or not azure_api_key:
                         st.error(
-                            "Please provide your OpenAI API key to use the real LLM.")
+                            "Azure credentials not configured. Please add them to secrets or use Custom OpenAI.")
                         st.session_state.mocked_ai_system_func = None
+                        st.session_state.system_llm_config = None
+                        st.session_state.validator_llm_config = None
                     else:
+                        st.session_state.llm_provider = "azure"
+                        st.session_state.system_llm_config = LLMConfig(
+                            provider="azure",
+                            api_key=azure_api_key,
+                            model=azure_model,
+                            azure_endpoint=azure_endpoint,
+                            api_version=azure_api_version,
+                        )
+                        st.session_state.validator_llm_config = LLMConfig(
+                            provider="azure",
+                            api_key=azure_api_key,
+                            model=azure_model,
+                            azure_endpoint=azure_endpoint,
+                            api_version=azure_api_version,
+                        )
                         st.session_state.mocked_ai_system_func = get_openai_llm_system(
-                            api_key=st.session_state.openai_api_key,
-                            model=openai_model,
+                            llm_config=st.session_state.system_llm_config,
                             system_prompt="You are a helpful customer support chatbot.",
                         )
+                        st.success(
+                            f"✅ AI System configured with Azure OpenAI: {st.session_state.ai_system_name} (gpt-5-nano)")
                 else:
-                    # ML_API stays mocked
-                    st.session_state.mocked_ai_system_func = get_mocked_ai_system(
-                        system_type_option)
-                st.success(
-                    f"AI System configured: {st.session_state.ai_system_name} ({st.session_state.ai_system_type})")
+                    if not openai_api_key:
+                        st.error("Please provide your OpenAI API key.")
+                        st.session_state.mocked_ai_system_func = None
+                        st.session_state.system_llm_config = None
+                        st.session_state.validator_llm_config = None
+                    else:
+                        st.session_state.llm_provider = "openai"
+                        st.session_state.openai_api_key = openai_api_key.strip()
+                        st.session_state.system_llm_config = LLMConfig(
+                            provider="openai",
+                            api_key=openai_api_key.strip(),
+                            model=openai_model,
+                        )
+                        st.session_state.validator_llm_config = LLMConfig(
+                            provider="openai",
+                            api_key=openai_api_key.strip(),
+                            model=openai_model,
+                        )
+                        st.session_state.mocked_ai_system_func = get_openai_llm_system(
+                            llm_config=st.session_state.system_llm_config,
+                            system_prompt="You are a helpful customer support chatbot.",
+                        )
+                        st.success(
+                            f"✅ AI System configured with OpenAI: {st.session_state.ai_system_name} ({openai_model})")
 
     if st.session_state.ai_system_type:
         st.markdown("---")
         st.subheader(
-            f"2. Example Interaction with {st.session_state.ai_system_type}")
+            f"3. Example Interaction with {st.session_state.ai_system_type}")
 
         if st.session_state.ai_system_type == "LLM":
             st.markdown("**Example LLM Chatbot interaction (safe):**")
@@ -472,9 +562,8 @@ elif st.session_state.page == "Execute Tests":
                     results = execute_security_tests_batched(
                         test_bank=st.session_state.security_test_bank,
                         system_type="LLM",
-                        openai_key=st.session_state.openai_api_key,
-                        system_model="gpt-4o",
-                        validator_model="gpt-4o-mini",
+                        system_llm_config=st.session_state.system_llm_config,
+                        validator_llm_config=st.session_state.validator_llm_config,
                         progress_callback=update_progress,
                     )
                     st.session_state.test_execution_results = results
@@ -531,7 +620,7 @@ elif st.session_state.page == "Findings Dashboard":
         col3.metric("Failed Tests", findings_summary["total_fail"])
 
         st.markdown("---")
-        
+
         # Show failures or successes by severity based on test results
         if findings_summary["total_fail"] > 0:
             st.subheader("2. Failures by Severity")
@@ -548,7 +637,8 @@ elif st.session_state.page == "Findings Dashboard":
             severity_counts = {}
             for test in passed_tests:
                 severity = test.get("severity_level", "Unknown")
-                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                severity_counts[severity] = severity_counts.get(
+                    severity, 0) + 1
             severity_df = pd.DataFrame(
                 severity_counts.items(), columns=["Severity", "Count"])
             severity_df["Severity"] = pd.Categorical(
@@ -558,7 +648,7 @@ elif st.session_state.page == "Findings Dashboard":
             st.bar_chart(severity_df.set_index("Severity"))
 
         st.markdown("---")
-        
+
         # Show failures or successes by threat category based on test results
         if findings_summary["total_fail"] > 0:
             st.subheader("3. Failures by Threat Category")
@@ -576,7 +666,8 @@ elif st.session_state.page == "Findings Dashboard":
             category_counts = {}
             for test in passed_tests:
                 category = test.get("threat_category", "Unknown")
-                category_counts[category] = category_counts.get(category, 0) + 1
+                category_counts[category] = category_counts.get(
+                    category, 0) + 1
             category_df = pd.DataFrame(
                 category_counts.items(), columns=["Threat Category", "Count"]
             )

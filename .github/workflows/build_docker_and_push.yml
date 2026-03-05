@@ -20,7 +20,11 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t qunikamshreyas/69712afaaf3b3d8cb59d84c2_streamlit_app:latest .
+          docker build \
+            --build-arg AZURE_ENDPOINT="${{ secrets.AZURE_ENDPOINT }}" \
+            --build-arg AZURE_API_KEY="${{ secrets.AZURE_API_KEY }}" \
+            --build-arg AZURE_API_VERSION="${{ secrets.AZURE_API_VERSION }}" \
+            -t qunikamshreyas/69712afaaf3b3d8cb59d84c2_streamlit_app:latest .
 
       - name: Push Docker image
         run: |
